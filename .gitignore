@@ -21,3 +21,4 @@ Fca_Database/
 # Python artifacts if any
 __pycache__/
 *.pyc
+appstate_base64.txt

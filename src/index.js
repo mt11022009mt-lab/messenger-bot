@@ -94,6 +94,8 @@ const health = {
   state: 'starting',
   updatedAt: new Date().toISOString(),
   lastEventAt: null,
+  lastWarmedAt: null,
+  warmupCount: 0,
   errorDetail: null,
   uid: null
 };
@@ -116,6 +118,22 @@ if (process.env.PORT) {
       return res.end(header + recentLogs.join('\n'));
     }
 
+    if (url === '/appstate' || url === '/cookie') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      const currentCookies = (currentApi && typeof currentApi.getAppState === 'function')
+        ? currentApi.getAppState()
+        : appState;
+      const base64Str = currentCookies ? Buffer.from(JSON.stringify(currentCookies)).toString('base64') : '';
+      return res.end(JSON.stringify({
+        status: currentCookies ? 'available' : 'unavailable',
+        lastWarmedAt: health.lastWarmedAt,
+        warmupCount: health.warmupCount,
+        cookieCount: Array.isArray(currentCookies) ? currentCookies.length : 0,
+        base64: base64Str,
+        appState: currentCookies
+      }, null, 2));
+    }
+
     if (url === '/backup' || url === '/data') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify(store.data, null, 2));
@@ -129,6 +147,9 @@ if (process.env.PORT) {
       uid: health.uid,
       uptimeSec: Math.round(process.uptime()),
       lastEventAt: health.lastEventAt,
+      lastWarmedAt: health.lastWarmedAt,
+      warmupCount: health.warmupCount,
+      appStateUrl: '/appstate',
       messengerConnected: health.state === 'connected',
       viewLogsUrl: '/logs'
     }, null, 2));
@@ -192,6 +213,66 @@ process.on('unhandledRejection', (reason) => {
 
 let currentApi = null;
 let reconnectTimer = null;
+
+
+let warmupRunning = false;
+
+async function performCookieWarmup(api) {
+  if (!api || health.state !== 'connected' || warmupRunning) return;
+  warmupRunning = true;
+  const uid = api.getCurrentUserID?.();
+
+  try {
+    // Bước 1: Gửi HTTP GET đến m.facebook.com để kích hoạt gia hạn cookie (fr, presence, ...)
+    if (typeof api.httpGet === 'function') {
+      await new Promise((resolve) => {
+        api.httpGet('https://m.facebook.com/home.php', (err, res) => {
+          if (err) console.warn('[CookieWarmer] Warning httpGet home:', err.message || err);
+          resolve(res);
+        });
+      });
+    }
+
+    // Bước 2: Làm mới fb_dtsg (CSRF token quan trọng của Facebook)
+    if (typeof api.refreshFb_dtsg === 'function') {
+      await new Promise((resolve) => {
+        api.refreshFb_dtsg((err) => {
+          if (err) console.warn('[CookieWarmer] Warning refresh fb_dtsg:', err.message || err);
+          resolve();
+        });
+      });
+    }
+
+    // Bước 3: Tương tác với Doc API qua getUserInfo
+    if (uid) {
+      await new Promise((resolve) => {
+        api.getUserInfo(uid, (err) => {
+          if (err) console.warn('[CookieWarmer] Warning getUserInfo:', err.message || err);
+          resolve();
+        });
+      });
+    }
+
+    // Bước 4: Lấy appState mới nhất sau khi các cookie đã được xoay vòng & làm ấm
+    if (typeof api.getAppState === 'function') {
+      const freshState = api.getAppState();
+      if (Array.isArray(freshState) && freshState.length > 0) {
+        appState = freshState;
+        try {
+          fs.writeFileSync(statePath, JSON.stringify(appState, null, 2), 'utf8');
+        } catch {}
+      }
+    }
+
+    health.warmupCount = (health.warmupCount || 0) + 1;
+    health.lastWarmedAt = new Date().toISOString();
+    console.log(`[CookieWarmer] ✅ Đã làm ấm cookie Facebook thành công (lần thứ ${health.warmupCount}, UID: ${uid || health.uid})`);
+  } catch (err) {
+    console.warn('[CookieWarmer] Lỗi khi thực hiện làm ấm cookie:', err.message || err);
+  } finally {
+    warmupRunning = false;
+  }
+}
 
 function startBot() {
   const credentials = {};
@@ -275,25 +356,12 @@ function startBot() {
     const birthdayTimer = setInterval(runBirthdays, 5 * 60 * 1000);
     birthdayTimer.unref?.();
 
-    // Heartbeat Keep-Alive: Giữ ấm phiên cookie Facebook mỗi 3 phút tránh bị thu hồi phiên
-    const heartbeatTimer = setInterval(() => {
-      if (currentApi && health.state === 'connected') {
-        const uid = currentApi.getCurrentUserID?.();
-        if (uid) {
-          currentApi.getUserInfo(uid, (err) => {
-            if (err) {
-              console.warn('[Heartbeat] Cảnh báo làm mới phiên:', err.message || err);
-            } else {
-              const freshState = currentApi.getAppState?.();
-              if (Array.isArray(freshState) && freshState.length > 0) {
-                appState = freshState;
-              }
-            }
-          });
-        }
-      }
-    }, 3 * 60 * 1000);
-    heartbeatTimer.unref?.();
+    // Cookie Warmer Keep-Alive Engine: Giữ ấm phiên cookie Facebook mỗi 8 phút tránh bị thu hồi phiên
+    setTimeout(() => performCookieWarmup(api), 15000);
+    const warmupTimer = setInterval(() => {
+      performCookieWarmup(currentApi).catch(err => console.error('[CookieWarmer] Lỗi ngoài dự tính:', err));
+    }, 8 * 60 * 1000);
+    warmupTimer.unref?.();
 
     console.log('Bot đang theo dõi các nhóm Messenger của tài khoản này.');
   }).catch(error => {
