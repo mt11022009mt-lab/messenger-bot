@@ -233,14 +233,24 @@ async function performCookieWarmup(api) {
       });
     }
 
-    // Bước 2: Làm mới fb_dtsg (CSRF token quan trọng của Facebook)
+    // Bước 2: Thử làm mới fb_dtsg một cách an toàn (bắt toàn bộ rejection để không crash)
     if (typeof api.refreshFb_dtsg === 'function') {
-      await new Promise((resolve) => {
-        api.refreshFb_dtsg((err) => {
-          if (err) console.warn('[CookieWarmer] Warning refresh fb_dtsg:', err.message || err);
-          resolve();
+      try {
+        await new Promise((resolve) => {
+          const res = api.refreshFb_dtsg((err) => {
+            if (err) console.warn('[CookieWarmer] Warning refresh fb_dtsg:', err.message || err);
+            resolve();
+          });
+          if (res && typeof res.catch === 'function') {
+            res.catch((e) => {
+              console.warn('[CookieWarmer] Catch promise rejection fb_dtsg:', e?.message || e);
+              resolve();
+            });
+          }
         });
-      });
+      } catch (err) {
+        console.warn('[CookieWarmer] Safe catch fb_dtsg error:', err.message || err);
+      }
     }
 
     // Bước 3: Tương tác với Doc API qua getUserInfo
