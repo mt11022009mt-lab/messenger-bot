@@ -305,7 +305,10 @@ function startBot() {
     global.fca.config.credentials = { email: fbEmail, password: fbPassword, twofactor: fb2FA };
   }
 
+  const modernUA = process.env.USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+
   loginAsync(credentials, {
+    userAgent: modernUA,
     listenEvents: true,
     selfListen: false,
     autoReconnect: true,
@@ -316,7 +319,7 @@ function startBot() {
     const myUid = api.getCurrentUserID?.();
     health.uid = myUid;
 
-    api.setOptions({ listenEvents: true, selfListen: false, autoReconnect: true, emitReady: true });
+    api.setOptions({ listenEvents: true, selfListen: false, autoReconnect: true, emitReady: true, userAgent: modernUA });
     const bot = createBot(api, store);
 
     setHealth('connected');
